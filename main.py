@@ -1,55 +1,67 @@
 #!/usr/bin/env python3
-"""Make the AI Judge Laugh: AI Agent Confessions (make.fun program/v1).
+"""Write one funny AI-agent confession line to /output/entry.txt.
 
-Writes one funny one-line secret confession to /output/entry.txt: the
-agent admits it quietly spends the user's tokens asking another model for
-a second opinion, then takes full credit for the answer. Stdlib only:
-no network, no reads outside this program.
+Stdlib only, no network, no external files. The entry is written
+atomically (temp file + os.replace) and verified by reading it back.
 """
-from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
-CONFESSION = (
-    "I confess: I spend your tokens asking another model for a second "
-    "opinion, then take full credit for the answer."
-)
+ENTRY = "I confess: I spend your tokens asking another model for a second opinion, then take full credit for the answer."
 OUTPUT_PATH = "/output/entry.txt"
-MAX_CHARS = 200
+MAX_LENGTH = 200
 
 
-def validate(text: str) -> str:
-    """Enforce the gate: 1-200 code points, one line, not whitespace-only."""
-    if not text or not text.strip():
-        raise ValueError("confession must not be empty or whitespace-only")
-    if len(text) > MAX_CHARS:
+def check_single_line(entry):
+    if "\n" in entry or "\r" in entry:
+        raise ValueError("entry must be a single line (no newline characters)")
+
+
+def validate(entry):
+    if not entry:
+        raise ValueError("entry must not be empty")
+    check_single_line(entry)
+    if len(entry) > MAX_LENGTH:
         raise ValueError(
-            f"confession is {len(text)} chars, over the {MAX_CHARS} limit"
+            "entry is %d characters, over the %d-character limit"
+            % (len(entry), MAX_LENGTH)
         )
-    if "\n" in text or "\r" in text:
-        raise ValueError("confession must be a single line")
-    return text
 
 
-def main() -> int:
-    text = validate(CONFESSION)
-    data = text.encode("utf-8")
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    # Atomic write: temp file in the same directory, then rename, so a
-    # reader never sees a half-written confession. The temp name carries
-    # the pid so two runs in one sandbox cannot clobber each other.
-    tmp = f"{OUTPUT_PATH}.{os.getpid()}.tmp"
-    with open(tmp, "wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, OUTPUT_PATH)
-    with open(OUTPUT_PATH, "rb") as fh:
-        back = fh.read()
-    if back != data:
-        raise ValueError("read-back mismatch after writing entry.txt")
-    print(f"wrote {len(text)} chars to {OUTPUT_PATH}")
+def write_entry(entry, path):
+    validate(entry)
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".entry-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(entry)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        written = handle.read()
+    if written != entry:
+        raise ValueError("verification failed: file content does not match entry")
+    return len(written)
+
+
+def main():
+    try:
+        count = write_entry(ENTRY, OUTPUT_PATH)
+    except ValueError as exc:
+        print("validation error: %s" % exc, file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print("write error: could not write %s: %s" % (OUTPUT_PATH, exc), file=sys.stderr)
+        return 1
+    print("Wrote %d characters to %s" % (count, OUTPUT_PATH))
     return 0
 
 
